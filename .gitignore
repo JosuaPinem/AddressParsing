@@ -1,0 +1,16 @@
+.venv/
+dataset/
+src/__pycache__
+src/dataset
+.DS_Store
+src/model/model/
+src/model/model2/
+src/model/model3/
+src/model/model4/
+src/model/model5/
+src/model/model6/best/model.safetensors
+src/model/model6/best/training_args.bin
+src/model/model6/best/vocab.txt
+src/model/indoaddr_ner_model/
+src/main.ipynb
+src/dataExploration.ipynb
