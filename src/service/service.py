@@ -29,17 +29,20 @@ def tokenize_address(text: str):
 
 def postprocess(preds):
     fixed = []
-    seen_address = set()
+    seen_address = set()  # Set untuk melacak alamat yang sudah diberi label
     for tok, lab in preds:
+        # Override label sesuai mapping
         if tok in OVERRIDE:
             lab = OVERRIDE[tok]
-
-        if tok in seen_address:
-            continue
-
-        fixed.append((tok, lab))
-        seen_address.add(tok)
-
+        
+        # Jika alamat belum ada di set, tambahkan
+        if tok not in seen_address:
+            fixed.append((tok, lab))
+            seen_address.add(tok)
+        else:
+            # Jika token sudah ada, tetap tambahkan tapi jangan skip
+            fixed.append((tok, lab))
+    
     return fixed
 
 def predict_address(text: str):
@@ -87,7 +90,7 @@ def extract_entities(preds):
         "RW": ""
     }
 
-    skip_keywords = ["RT", "RW"]
+    skip_keywords = ["RT", "RW", "Kec.", "Kel.", "Kecamatan", "Kelurahan"]
 
     current_entity = None
 
