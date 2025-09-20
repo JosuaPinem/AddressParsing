@@ -90,7 +90,7 @@ def extract_entities(preds):
         "RW": ""
     }
 
-    skip_keywords = ["RT", "RW", "Kec.", "Kel.", "Kecamatan", "Kelurahan"]
+    skip_keywords = [ "Kec.", "Kel.", "Kecamatan", "Kelurahan"]
 
     current_entity = None
 
@@ -172,7 +172,7 @@ def reformatingKodePos(entities):
             for row in rows:
                 columns = row.find_all('td')
                 
-                if len(columns) > 0:  # Cek jika kolom ada
+                if len(columns) > 0:
                     kelurahan_data = columns[2].get_text(strip=True)
                     kecamatan_data = columns[3].get_text(strip=True)
                     kota_data = columns[4].get_text(strip=True)
@@ -183,7 +183,7 @@ def reformatingKodePos(entities):
                         entities["Kecamatan"] = kecamatan_data
                         entities["Kota/Kabupaten"] = kota_data
                         entities["Provinsi"] = provinsi_data
-                        return entities  
+                        return entities
 
                     elif entities["Kecamatan"] == kecamatan_data:
                         entities["Kelurahan"] = kelurahan_data
@@ -204,7 +204,7 @@ def reformatingKodePos(entities):
                         entities["Kecamatan"] = kecamatan_data
                         entities["Kota/Kabupaten"] = kota_data
                         entities["Provinsi"] = provinsi_data
-                        return entities 
+                        return entities
 
                     elif entities["Kelurahan"] == kecamatan_data:
                         entities["Kelurahan"] = kelurahan_data
@@ -213,7 +213,6 @@ def reformatingKodePos(entities):
                         entities["Provinsi"] = provinsi_data
                         return entities
 
-            print("Tidak ada kecocokan data.")
             return entities
         else:
             print("Tabel tidak ditemukan.")
@@ -223,10 +222,17 @@ def reformatingKodePos(entities):
         print(f"Error: Status Code {response.status_code}")
         return entities
 
-def reformatingNonKodePos(entities):
+def reformatingNonKodePos(entities, info):
     url = "https://kodepos.posindonesia.co.id/CariKodepos"
-
-    informasi = entities.get("Kota/Kabupaten", "")
+    if info != "notKota":
+        if entities.get("Kecamatan", "") is not [None, ""]:
+            informasi = entities.get("Kecamatan", "")
+        elif entities.get("Kelurahan", "") is not [None, ""]:
+            informasi = entities.get("Kelurahan", "")
+        else:
+            return
+    elif info == "":
+        informasi = entities.get("Kota/Kabupaten", "")
 
     data = {"kodepos": informasi}
     response = requests.post(url, data=data)
