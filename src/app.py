@@ -18,7 +18,9 @@ def predict():
     if preds.get("Kode Pos") not in [None, ""]:
         reformating = reformatingKodePos(preds)
     elif preds.get("Kota/Kabupaten") not in [None, ""]:
-        reformating = reformatingNonKodePos(preds)
+        reformating = reformatingNonKodePos(preds, info = ""),
+    elif preds.get("Kecamatan") not in [None, ""] or preds.get("Kelurahan") not in [None, ""]:
+        reformating = reformatingNonKodePos(preds, info = "notKota")
     else:
         reformating = preds
 
