@@ -14,9 +14,6 @@ src/model/model8/
 src/model/model9/
 src/model/model10/
 src/model/model11/
-src/model/model12/best/model.safetensors
-src/model/model12/best/training_args.bin
-src/model/model12/best/vocab.txt
 src/model/indoaddr_ner_model/
 src/main.ipynb
 src/dataExploration.ipynb
