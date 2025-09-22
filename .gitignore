@@ -20,3 +20,4 @@ src/model/model12/best/vocab.txt
 src/model/indoaddr_ner_model/
 src/main.ipynb
 src/dataExploration.ipynb
+src/service/__pycache__
