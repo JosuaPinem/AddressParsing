@@ -2,6 +2,8 @@ from transformers import AutoModelForTokenClassification, AutoTokenizer
 from datasets import Dataset
 import re, os, torch, requests
 from bs4 import BeautifulSoup
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -11,22 +13,26 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 id2label = model.config.id2label
 
 
+# Override mapping for special tokens
 OVERRIDE = {
     "Kec.": "B-KECAMATAN",
     "Kecamatan": "B-KECAMATAN",
     "Kota": "B-KOTA",
     "Kabupaten": "B-KOTA",
-    "RT": "B-RT",
-    "RW": "B-RW",
+    "RT": "B-RT",  # Treat RT and RW as B-RT, B-RW
+    "RW": "B-RW",  # Avoid RT/RW as separate entities
     "Kel.": "B-KELURAHAN",
     "Kelurahan": "B-KELURAHAN"
 }
 
+# Tokenizer function
 def tokenize_address(text: str):
-    text = re.sub(r'([.,/])', r' \1 ', text)
+    # Pisahkan koma, titik, slash agar sesuai dengan training
+    text = re.sub(r'([,/])', r' \1 ', text)
     tokens = text.split()
     return tokens
 
+# Postprocess function for overriding labels
 def postprocess(preds):
     fixed = []
     seen_address = set()  # Set untuk melacak alamat yang sudah diberi label
@@ -45,7 +51,10 @@ def postprocess(preds):
     
     return fixed
 
+
+# Function for prediction
 def predict_address(text: str):
+    # Step 1: Tokenisasi sesuai training
     tokens = tokenize_address(text)
     encoding = tokenizer(
         tokens,
@@ -55,18 +64,20 @@ def predict_address(text: str):
         max_length=512
     )
 
+    # Step 2: Inference
     with torch.no_grad():
         outputs = model(**encoding)
     logits = outputs.logits
     predictions = torch.argmax(logits, dim=2)
 
+    # Step 3: Mapping prediksi ke label
     word_ids = encoding.word_ids(batch_index=0)
     preds = []
-    seen = set()
+    seen = set()  # track word indices yang sudah dipakai
     for idx, word_id in enumerate(word_ids):
-        if word_id is None:
+        if word_id is None:  # [CLS], [SEP]
             continue
-        if word_id in seen:
+        if word_id in seen:  # Skip subword duplikat
             continue
         seen.add(word_id)
 
@@ -74,11 +85,14 @@ def predict_address(text: str):
         label = id2label[label_id]
         preds.append((tokens[word_id], label))
 
+    # Step 4: Postprocess (override label penting)
     preds = postprocess(preds)
 
     return preds
 
+
 def extract_entities(preds):
+    # Initialize entity dictionary
     entities = {
         "Jalan": "",
         "Kelurahan": "",
@@ -90,28 +104,32 @@ def extract_entities(preds):
         "RW": ""
     }
 
-    skip_keywords = [ "Kec.", "Kel.", "Kecamatan", "Kelurahan"]
+    # For skipping unwanted keywords like RT and RW
+    skip_keywords = ["RT", "RW", "Kec.", ".", "Kec", "Kel"]
 
     current_entity = None
 
     for tok, lab in preds:
+        # Check if token is to be overridden or skipped
         if tok in OVERRIDE:
-            lab = OVERRIDE[tok]
-
+            lab = OVERRIDE[tok]  # Override with corresponding label
+        
+        # Skip RT, RW tokens while still preserving their data
         if tok in skip_keywords:
-            continue
+            continue  # Skip if token is "RT" or "RW"
         
         if lab.startswith("B-"):
             ent_type = lab.split("-", 1)[1]
             current_entity = ent_type
 
+            # Process entities based on B-type labels
             if ent_type == "JALAN":
                 entities["Jalan"] = tok
-            elif ent_type == "KELURAHAN" and tok not in skip_keywords:
+            elif ent_type == "KELURAHAN" and tok not in skip_keywords:  # Skip Kelurahan
                 entities["Kelurahan"] = tok
-            elif ent_type == "KECAMATAN" and tok not in skip_keywords:
+            elif ent_type == "KECAMATAN" and tok not in skip_keywords:  # Skip Kecamatan
                 entities["Kecamatan"] = tok
-            elif ent_type == "KOTA" and tok not in skip_keywords:
+            elif ent_type == "KOTA" and tok not in skip_keywords:  # Always keep Kota
                 entities["Kota/Kabupaten"] = tok
             elif ent_type == "PROVINSI":
                 entities["Provinsi"] = tok
@@ -125,18 +143,19 @@ def extract_entities(preds):
         elif lab.startswith("I-") and current_entity:
             ent_type = lab.split("-", 1)[1]
 
+            # Add tokens to respective entities (ignore if skipped)
             if ent_type == "JALAN":
                 entities["Jalan"] += " " + tok
-            elif ent_type == "KELURAHAN" and tok not in skip_keywords:
+            elif ent_type == "KELURAHAN" and tok not in skip_keywords:  # Skip Kelurahan
                 entities["Kelurahan"] += " " + tok
-            elif ent_type == "KECAMATAN" and tok not in skip_keywords:
+            elif ent_type == "KECAMATAN" and tok not in skip_keywords:  # Skip Kecamatan
                 entities["Kecamatan"] += " " + tok
-            elif ent_type == "KOTA" and tok not in skip_keywords:
+            elif ent_type == "KOTA" and tok not in skip_keywords:  # Always keep Kota
                 entities["Kota/Kabupaten"] += " " + tok
             elif ent_type == "PROVINSI":
                 entities["Provinsi"] += " " + tok
             elif ent_type == "KODEPOS":
-                entities["Kode Pos"] += tok
+                entities["Kode Pos"] += tok  # kodepos biasanya angka tanpa spasi
             elif ent_type == "RT":
                 entities["RT"] += " " + tok
             elif ent_type == "RW":
@@ -145,21 +164,24 @@ def extract_entities(preds):
         else:
             current_entity = None
 
+    # Clean up empty or unwanted fields
     for k in entities:
         entities[k] = entities[k].strip()
 
+    # Remove Kelurahan and Kecamatan if they are still empty
     if not entities["Kelurahan"]:
-        entities["Kelurahan"] = None
+        entities["Kelurahan"] = ""
     if not entities["Kecamatan"]:
-        entities["Kecamatan"] = None
+        entities["Kecamatan"] = ""
 
     return entities
+
+from fuzzywuzzy import fuzz, process
 
 def reformatingKodePos(entities):
     url = "https://kodepos.posindonesia.co.id/CariKodepos"
 
-    informasi = entities.get("Kode Pos", "")
-
+    informasi = entities["Kode Pos"]
     data = {"kodepos": informasi}
     response = requests.post(url, data=data)
     
@@ -168,71 +190,64 @@ def reformatingKodePos(entities):
         table = soup.find('table', id='list-data')
         
         if table:
+            kelurahan_list = []
+            kecamatan_list = []
+            kota_list = []
+            provinsi_list = []
+            alamat_list = []
+
             rows = table.find_all('tr')[1:]
             for row in rows:
                 columns = row.find_all('td')
-                
                 if len(columns) > 0:
                     kelurahan_data = columns[2].get_text(strip=True)
                     kecamatan_data = columns[3].get_text(strip=True)
                     kota_data = columns[4].get_text(strip=True)
                     provinsi_data = columns[5].get_text(strip=True)
 
-                    if entities["Kota/Kabupaten"] == kota_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+                    kelurahan_list.append(kelurahan_data)
+                    kecamatan_list.append(kecamatan_data)
+                    kota_list.append(kota_data)
+                    provinsi_list.append(provinsi_data)
 
-                    elif entities["Kecamatan"] == kecamatan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+                    alamat_list.append(f"{kelurahan_data} {kecamatan_data} {kota_data} {provinsi_data}")
 
-                    elif entities["Kelurahan"] == kelurahan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            # Gabungkan entities
+            alamat_entities = f"{entities['Kelurahan']} {entities['Kecamatan']} {entities['Kota/Kabupaten']} {entities['Provinsi']}"
 
-                    elif entities["Kecamatan"] == kelurahan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            # Fuzzy match
+            best_match = process.extractOne(alamat_entities, alamat_list, scorer=fuzz.ratio)
 
-                    elif entities["Kelurahan"] == kecamatan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            print(f"Alamat Entities: {alamat_entities}")
+            print(f"Best Match: {best_match}")
+
+            threshold = 70
+            if best_match and best_match[1] >= threshold:
+                # cari index dari best_match di alamat_list
+                idx = alamat_list.index(best_match[0])
+
+                entities["Kelurahan"] = kelurahan_list[idx]
+                entities["Kecamatan"] = kecamatan_list[idx]
+                entities["Kota/Kabupaten"] = kota_list[idx]
+                entities["Provinsi"] = provinsi_list[idx]
 
             return entities
         else:
             print("Tabel tidak ditemukan.")
             return entities
-
     else:
         print(f"Error: Status Code {response.status_code}")
         return entities
 
+
 def reformatingNonKodePos(entities, info):
     url = "https://kodepos.posindonesia.co.id/CariKodepos"
-    if info != "notKota":
-        if entities.get("Kecamatan", "") is not [None, ""]:
-            informasi = entities.get("Kecamatan", "")
-        elif entities.get("Kelurahan", "") is not [None, ""]:
-            informasi = entities.get("Kelurahan", "")
-        else:
-            return
-    elif info == "":
-        informasi = entities.get("Kota/Kabupaten", "")
+    if info == "kota":
+        informasi = entities["Kota/Kabupaten"]
+    elif info == "kecamatan":
+        informasi = entities["Kecamatan"]
+    elif info == "kelurahan":
+        informasi = entities["Kelurahan"]
 
     data = {"kodepos": informasi}
     response = requests.post(url, data=data)
@@ -242,53 +257,51 @@ def reformatingNonKodePos(entities, info):
         table = soup.find('table', id='list-data')
         
         if table:
+            kelurahan_list = []
+            kecamatan_list = []
+            kota_list = []
+            provinsi_list = []
+            alamat_list = []
+
             rows = table.find_all('tr')[1:]
             for row in rows:
                 columns = row.find_all('td')
-                
                 if len(columns) > 0:
                     kelurahan_data = columns[2].get_text(strip=True)
                     kecamatan_data = columns[3].get_text(strip=True)
                     kota_data = columns[4].get_text(strip=True)
                     provinsi_data = columns[5].get_text(strip=True)
 
-                    if entities["Kota/Kabupaten"] == kota_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+                    kelurahan_list.append(kelurahan_data)
+                    kecamatan_list.append(kecamatan_data)
+                    kota_list.append(kota_data)
+                    provinsi_list.append(provinsi_data)
 
-                    elif entities["Kecamatan"] == kecamatan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+                    alamat_list.append(f"{kelurahan_data} {kecamatan_data} {kota_data} {provinsi_data}")
 
-                    elif entities["Kelurahan"] == kelurahan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            # Gabungkan entities
+            alamat_entities = f"{entities['Kelurahan']} {entities['Kecamatan']} {entities['Kota/Kabupaten']} {entities['Provinsi']}"
 
-                    elif entities["Kecamatan"] == kelurahan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            # Fuzzy match
+            best_match = process.extractOne(alamat_entities, alamat_list, scorer=fuzz.ratio)
 
-                    elif entities["Kelurahan"] == kecamatan_data:
-                        entities["Kelurahan"] = kelurahan_data
-                        entities["Kecamatan"] = kecamatan_data
-                        entities["Kota/Kabupaten"] = kota_data
-                        entities["Provinsi"] = provinsi_data
-                        return entities
+            print(f"Alamat Entities: {alamat_entities}")
+            print(f"Best Match: {best_match}")
+
+            threshold = 70
+            if best_match and best_match[1] >= threshold:
+                # cari index dari best_match di alamat_list
+                idx = alamat_list.index(best_match[0])
+
+                entities["Kelurahan"] = kelurahan_list[idx]
+                entities["Kecamatan"] = kecamatan_list[idx]
+                entities["Kota/Kabupaten"] = kota_list[idx]
+                entities["Provinsi"] = provinsi_list[idx]
 
             return entities
         else:
+            print("Tabel tidak ditemukan.")
             return entities
     else:
+        print(f"Error: Status Code {response.status_code}")
         return entities
