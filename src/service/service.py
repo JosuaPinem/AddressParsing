@@ -90,6 +90,19 @@ def predict_address(text: str):
 
     return preds
 
+def tokenize_rtrw(text: str):
+    # Pisahkan koma, titik, slash agar sesuai dengan training
+    text = re.sub(r'([,/.])', r' \1 ', text)
+    tokens = text.split()
+    skip_key = ["RT", "RW", ".", "Rt", "Rw", "rt", "rw", "rT", "rW"]
+    final_rtrw = ""
+    for i in tokens:
+        if i in skip_key:
+            continue
+        final_rtrw += i + " " 
+
+    return final_rtrw.strip()
+
 
 def extract_entities(preds):
     # Initialize entity dictionary
@@ -105,7 +118,7 @@ def extract_entities(preds):
     }
 
     # For skipping unwanted keywords like RT and RW
-    skip_keywords = ["RT", "RW", "Kec.", ".", "Kec", "Kel"]
+    skip_keywords = ["RT", "RW", "Kec.", "kec.", "kec", "Kec", "Kel", "Kel.", "kel", "Kel"]
 
     current_entity = None
 
@@ -124,12 +137,15 @@ def extract_entities(preds):
 
             # Process entities based on B-type labels
             if ent_type == "JALAN":
-                entities["Jalan"] = tok
-            elif ent_type == "KELURAHAN" and tok not in skip_keywords:  # Skip Kelurahan
+                if "Jalan" not in entities or not entities["Jalan"]:
+                    entities["Jalan"] = tok 
+                else:
+                    entities["Jalan"] += " " + tok
+            elif ent_type == "KELURAHAN" and tok not in skip_keywords:
                 entities["Kelurahan"] = tok
-            elif ent_type == "KECAMATAN" and tok not in skip_keywords:  # Skip Kecamatan
+            elif ent_type == "KECAMATAN" and tok not in skip_keywords: 
                 entities["Kecamatan"] = tok
-            elif ent_type == "KOTA" and tok not in skip_keywords:  # Always keep Kota
+            elif ent_type == "KOTA" and tok not in skip_keywords: 
                 entities["Kota/Kabupaten"] = tok
             elif ent_type == "PROVINSI":
                 entities["Provinsi"] = tok
@@ -164,19 +180,21 @@ def extract_entities(preds):
         else:
             current_entity = None
 
+    if entities["RT"] not in ["", None]:
+        entities["RT"] = tokenize_rtrw(entities["RT"])
+    if entities["RW"] not in ["", None]:
+        entities["RW"] = tokenize_rtrw(entities["RW"])
     # Clean up empty or unwanted fields
     for k in entities:
         entities[k] = entities[k].strip()
 
     # Remove Kelurahan and Kecamatan if they are still empty
     if not entities["Kelurahan"]:
-        entities["Kelurahan"] = ""
+        entities["Kelurahan"] = None
     if not entities["Kecamatan"]:
-        entities["Kecamatan"] = ""
+        entities["Kecamatan"] = None
 
     return entities
-
-from fuzzywuzzy import fuzz, process
 
 def reformatingKodePos(entities):
     url = "https://kodepos.posindonesia.co.id/CariKodepos"
@@ -212,6 +230,18 @@ def reformatingKodePos(entities):
 
                     alamat_list.append(f"{kelurahan_data} {kecamatan_data} {kota_data} {provinsi_data}")
 
+            if len(kelurahan_list) == 0 and len(kecamatan_list) == 0 and len(kota_list) == 0 and len(provinsi_list)==0:
+                if entities.get("Kota/Kabupaten") not in [None, ""]:
+                    reformating = reformatingNonKodePos(entities, info = "kota")
+                    return reformating
+                elif entities.get("Kecamatan") not in [None, ""]:
+                    reformating = reformatingNonKodePos(entities, info = "kecamatan")
+                    return reformating
+                elif  entities.get("Kelurahan") not in [None, ""]:
+                    reformating = reformatingNonKodePos(entities, info = "kelurahan")
+                    return reformating
+                else:
+                    return entities
             # Gabungkan entities
             alamat_entities = f"{entities['Kelurahan']} {entities['Kecamatan']} {entities['Kota/Kabupaten']} {entities['Provinsi']}"
 
